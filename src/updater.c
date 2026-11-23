@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pico/stdlib.h"
-#include "hardware/watchdog.h"
 #include "ff.h"
 #include "ui.h"
 #include "net.h"
@@ -134,16 +133,30 @@ static bool download(const char *url, const char *dest, char *err, size_t errlen
     return ok;
 }
 
-void updater_check(void) {
-    if (!g_cfg.wifi_ssid[0]) {
-        ui_error("Update", "Configure Wi-Fi first\n(F9 menu > Wi-Fi settings)");
-        return;
-    }
+void updater_check(bool (*wifi_setup)(void)) {
     char err[96] = "";
     char tag[32] = "", url[512] = "";
-    ui_progress_begin("Check for update");
-    int rc = net_wifi_connect(g_cfg.wifi_ssid, g_cfg.wifi_pass, err, sizeof(err));
-    if (rc == 0) {
+    char msg[200];
+    for (;;) {
+        if (!g_cfg.wifi_ssid[0]) {
+            if (!wifi_setup()) return;
+            continue;
+        }
+        ui_progress_begin("Check for update");
+        int rc = net_wifi_connect(g_cfg.wifi_ssid, g_cfg.wifi_pass, err, sizeof(err));
+        if (rc == 0) break;
+        ui_progress_end();
+        net_wifi_off();
+        if (rc == -2) return;
+        snprintf(msg, sizeof(msg), "Could not connect to Wi-Fi\n%s\n\n%s", g_cfg.wifi_ssid, err);
+        static const char *const o[] = {"Setup", "Retry", "Cancel"};
+        int c = ui_choice("Update", msg, o, 3, 0, true);
+        if (c == 0) {
+            if (!wifi_setup()) return;
+        } else if (c != 1) return;
+    }
+    int rc = 0;
+    {
         membuf_t m = {0};
         http_cb_t cb = {NULL, mem_body, &m};
         int st = net_https_get("https://api.github.com/repos/" FM_GITHUB_REPO "/releases/latest",
@@ -173,7 +186,6 @@ void updater_check(void) {
         return;
     }
 
-    char msg[160];
     int cmp = version_cmp(tag, FM_VERSION);
     if (cmp <= 0) {
         snprintf(msg, sizeof(msg), "You have the latest version.\n\nInstalled: v%s\nLatest:    %s\n\nDownload it again anyway?", FM_VERSION, tag);
@@ -195,11 +207,10 @@ void updater_check(void) {
         if (strcmp(err, "Cancelled")) ui_error("Download failed", err);
         return;
     }
-    snprintf(msg, sizeof(msg), "Saved %s to\n" UPDATE_DIR "/\n\nRestart, then pick it in UF2Loader\n(hold Up/F1 at power-on).\n\nRestart now?", tag);
-    static const char *const o[] = {"Restart", "Later"};
+    snprintf(msg, sizeof(msg), "Saved %s to\n" UPDATE_DIR "/\n\nSelect it in UF2Loader to install.\n\nGo to UF2Loader now?", tag);
+    static const char *const o[] = {"Yes", "Later"};
     if (ui_choice("Update downloaded", msg, o, 2, 0, false) == 0) {
         config_save();
-        watchdog_reboot(0, 0, 10);
-        for (;;) tight_loop_contents();
+        reboot_to_loader();
     }
 }

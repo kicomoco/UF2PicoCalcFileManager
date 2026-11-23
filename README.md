@@ -24,7 +24,7 @@ A Midnight Commander–style file manager for the **ClockworkPi PicoCalc** fitte
 2. Download `picocalc_file_manager.uf2` from the
    [latest release](https://github.com/kicomoco/UF2PicoCalcFileManager/releases/latest).
 3. Copy it to `/pico2-apps/` on the SD card.
-4. Select it in the UF2Loader menu. To get back to the loader, hold **Up**, **F1** or **F5** while powering on.
+4. Select it in the UF2Loader menu. To get back to the loader, use **F9 → Exit to UF2Loader**, or hold **Up**, **F1** or **F5** while powering on.
 
 ## Keys
 
@@ -43,7 +43,7 @@ A Midnight Commander–style file manager for the **ClockworkPi PicoCalc** fitte
 | F5 / F6 | Copy / move (the other panel's path is pre-filled) |
 | F7 | Make a folder |
 | F8 or Del | Delete |
-| F9 | Menu (sorting, hidden files, Wi‑Fi, updates, restart…) |
+| F9 | Menu (sorting, hidden files, Wi‑Fi, updates, exit to UF2Loader…) |
 | F10 | Hex editor |
 | Ctrl+N | New file |
 | Ctrl+L | Toggle the split view |
@@ -58,10 +58,11 @@ Any other target is used as the new name. Relative paths are resolved from the c
 
 ## Wi‑Fi and updates
 
-Open **F9 → Wi‑Fi settings** to scan for a network or type one in, then enter its password.
-Then use **F9 → Check for updates**. The app downloads the latest release over HTTPS, with the
+Open **F9 → Wi‑Fi settings** to scan for a network or type one in, then enter its password. The
+password is checked by connecting straight away. **F9 → Check for updates** opens the Wi‑Fi
+settings itself if no network is set up or the connection fails. It downloads the latest release over HTTPS, with the
 certificate checked against bundled root CAs. The new file is checked to be a valid UF2 and then
-replaces `/pico2-apps/picocalc_file_manager.uf2`. After it restarts, choose it in UF2Loader.
+replaces `/pico2-apps/picocalc_file_manager.uf2`. It then offers to return to UF2Loader, where you select it to install.
 
 Settings are saved to `/picocalc_file_manager.cfg`, including the Wi‑Fi password in plain text.
 

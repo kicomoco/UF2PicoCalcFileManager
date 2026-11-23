@@ -27,7 +27,7 @@ void ui_keybar(const char *const labels[10]) {
 static int wrap_text(const char *msg, int w, char lines[][DLG_W + 1], int maxl) {
     int n = 0;
     char tmp[512];
-    utf8_to_disp(tmp, sizeof(tmp), msg ? msg : "");
+    utf8_to_disp_ml(tmp, sizeof(tmp), msg ? msg : "");
     const char *p = tmp;
     while (*p && n < maxl) {
         const char *nl = strchr(p, '\n');

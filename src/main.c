@@ -4,7 +4,6 @@
 #include <ctype.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
-#include "hardware/watchdog.h"
 #include "ff.h"
 #include "lcd.h"
 #include "kbd.h"
@@ -495,18 +494,54 @@ static void enter_dir(panel_t *p, const char *name) {
 
 /* ------------------------------------------------------------ settings */
 
-static void wifi_settings(void) {
+/* Asks for the password of ssid and verifies it by connecting. On success the
+ * settings are saved and Wi-Fi is left connected. */
+static bool wifi_ask_password(const char *ssid) {
+    char err[64];
+    for (;;) {
+        char b[80] = "";
+        if (!ui_input("Wi-Fi", "Password (empty for open network):", b, sizeof(b), true)) return false;
+        net_wifi_off();
+        ui_progress_begin("Wi-Fi");
+        int rc = net_wifi_connect(ssid, b, err, sizeof(err));
+        ui_progress_end();
+        if (rc == 0) {
+            if (ssid != g_cfg.wifi_ssid) snprintf(g_cfg.wifi_ssid, sizeof(g_cfg.wifi_ssid), "%s", ssid);
+            snprintf(g_cfg.wifi_pass, sizeof(g_cfg.wifi_pass), "%s", b);
+            save_config_now();
+            return true;
+        }
+        net_wifi_off();
+        char msg[160];
+        snprintf(msg, sizeof(msg), "Could not connect to\n%s\n\n%s\n\nSave keeps the password anyway.", ssid, err);
+        static const char *const o[] = {"Retry", "Save", "Cancel"};
+        int c = ui_choice("Wi-Fi", msg, o, 3, 0, true);
+        if (c == 0) continue;
+        if (c == 1) {
+            if (ssid != g_cfg.wifi_ssid) snprintf(g_cfg.wifi_ssid, sizeof(g_cfg.wifi_ssid), "%s", ssid);
+            snprintf(g_cfg.wifi_pass, sizeof(g_cfg.wifi_pass), "%s", b);
+            save_config_now();
+        }
+        return false;
+    }
+}
+
+/* Wi-Fi settings menu. With for_update set, returns true as soon as a
+ * connection is verified and leaves Wi-Fi connected; otherwise Wi-Fi is
+ * always switched off again and false is returned. */
+static bool wifi_settings(bool for_update) {
     static const char *const items[] = {"Scan for networks", "Enter network name", "Set password", "Forget network"};
     char msg[64];
     for (;;) {
         snprintf(msg, sizeof(msg), "Wi-Fi: %s", g_cfg.wifi_ssid[0] ? g_cfg.wifi_ssid : "(not set)");
         int k = ui_menu(msg, items, 4, 0);
-        if (k < 0) return;
-        bool ask_pass = false;
+        if (k < 0) return false;
+        char ssid[33] = "";
         if (k == 0) {
             char (*ss)[33] = calloc(24, 33);
-            if (!ss) return;
+            if (!ss) return false;
             char err[64] = "";
+            net_wifi_off();
             ui_progress_begin("Wi-Fi");
             int n = net_wifi_scan(ss, 24, err, sizeof(err));
             ui_progress_end();
@@ -517,31 +552,30 @@ static void wifi_settings(void) {
             char disp[24][33];
             for (int i = 0; i < n; i++) { disp_name(disp[i], 33, ss[i]); list[i] = disp[i]; }
             int s = ui_menu("Select network", list, n, 0);
-            if (s >= 0) {
-                strncpy(g_cfg.wifi_ssid, ss[s], sizeof(g_cfg.wifi_ssid) - 1);
-                ask_pass = true;
-            }
+            if (s >= 0) snprintf(ssid, sizeof(ssid), "%s", ss[s]);
             free(ss);
         } else if (k == 1) {
             char b[64];
             strcpy(b, g_cfg.wifi_ssid);
-            if (ui_input("Wi-Fi", "Network name (SSID):", b, sizeof(b), false)) {
-                strcpy(g_cfg.wifi_ssid, b);
-                ask_pass = true;
-            }
-        } else if (k == 2) ask_pass = true;
-        else if (k == 3) {
+            if (ui_input("Wi-Fi", "Network name (SSID):", b, sizeof(b), false) && b[0])
+                snprintf(ssid, sizeof(ssid), "%s", b);
+        } else if (k == 2) {
+            if (!g_cfg.wifi_ssid[0]) { ui_error("Wi-Fi", "Choose a network first."); continue; }
+            snprintf(ssid, sizeof(ssid), "%s", g_cfg.wifi_ssid);
+        } else if (k == 3) {
+            net_wifi_off();
             g_cfg.wifi_ssid[0] = g_cfg.wifi_pass[0] = 0;
             save_config_now();
         }
-        if (ask_pass) {
-            char b[80] = "";
-            if (ui_input("Wi-Fi", "Password (empty for open network):", b, sizeof(b), true)) strcpy(g_cfg.wifi_pass, b);
-            save_config_now();
-            ui_message("Wi-Fi", "Settings saved.\n\nNote: stored in plain text in\n" CONFIG_PATH);
+        if (ssid[0] && wifi_ask_password(ssid)) {
+            if (for_update) return true;
+            net_wifi_off();
+            ui_message("Wi-Fi", "Connected! Settings saved.\n\nNote: stored in plain text in\n" CONFIG_PATH);
         }
     }
 }
+
+static bool wifi_setup_for_update(void) { return wifi_settings(true); }
 
 static const char help_text[] =
     "PicoCalc File Manager v" FM_VERSION "\n"
@@ -588,10 +622,11 @@ static const char help_text[] =
     "F9 > Check for updates downloads the\n"
     "latest release from GitHub to\n"
     "/pico2-apps/picocalc_file_manager.uf2\n"
-    "Configure Wi-Fi in the F9 menu first.\n"
+    "Wi-Fi setup opens if not connected.\n"
     "\n"
-    "UF2Loader: hold Up/F1/F5 while powering\n"
-    "on to return to the loader menu.\n";
+    "F9 > Exit to UF2Loader returns to the\n"
+    "loader menu (or hold Up/F1/F5 while\n"
+    "powering on).\n";
 
 static void show_about(void) {
     ui_message("About",
@@ -630,7 +665,7 @@ static void main_menu(void) {
     const char *items[] = {
         "New file\tC-N", "Hex edit file\tF10", split_item, "Swap panels\tC-U", "Other panel = this dir\tC-O",
         sort_item, hid_item, "Refresh / remount SD\tC-R", "Wi-Fi settings", "Check for updates",
-        "Help\tF1", "About", "Restart device",
+        "Help\tF1", "About", "Exit to UF2Loader",
     };
     int k = ui_menu("Menu", items, sizeof(items) / sizeof(items[0]), 0);
     switch (k) {
@@ -654,19 +689,18 @@ static void main_menu(void) {
         save_config_now();
         break;
     case 7: remount(); break;
-    case 8: wifi_settings(); break;
+    case 8: wifi_settings(false); break;
     case 9:
         save_config_now();
-        updater_check();
+        updater_check(wifi_setup_for_update);
         reload_all();
         break;
     case 10: ui_textpage("Help", help_text); break;
     case 11: show_about(); break;
     case 12:
-        if (ui_confirm("Restart", "Restart the PicoCalc?")) {
+        if (ui_confirm("Exit", "Return to the UF2Loader menu?")) {
             save_config_now();
-            watchdog_reboot(0, 0, 10);
-            for (;;) tight_loop_contents();
+            reboot_to_loader();
         }
         break;
     }

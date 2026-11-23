@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include "util.h"
 #include "ff.h"
+#include "hardware/watchdog.h"
 
 void path_join(char *out, size_t n, const char *dir, const char *name) {
     size_t dl = strlen(dir);
@@ -42,12 +43,12 @@ void fmt_size(char *out, size_t n, uint64_t sz) {
     else snprintf(out, n, "%u%c", (unsigned)(v + 0.5), units[u]);
 }
 
-void utf8_to_disp(char *out, size_t n, const char *in) {
+static void to_disp(char *out, size_t n, const char *in, bool keep_nl) {
     size_t o = 0;
     const unsigned char *p = (const unsigned char *)in;
     while (*p && o + 1 < n) {
         if (*p < 0x80) {
-            out[o++] = (*p >= 32) ? (char)*p : '?';
+            out[o++] = (*p >= 32 || (keep_nl && *p == '\n')) ? (char)*p : '?';
             p++;
         } else {
             out[o++] = '?';
@@ -56,6 +57,22 @@ void utf8_to_disp(char *out, size_t n, const char *in) {
         }
     }
     out[o] = 0;
+}
+
+void utf8_to_disp(char *out, size_t n, const char *in) { to_disp(out, n, in, false); }
+void utf8_to_disp_ml(char *out, size_t n, const char *in) { to_disp(out, n, in, true); }
+
+/* UF2Loader's stage3 reads these watchdog scratch registers after reset;
+ * BOOT_SD (1) tells it to load the loader menu instead of the flashed app. */
+#define PICOCALC_BL_MAGIC 0xe98cc638u
+#define BL_BOOT_SD 1u
+
+void reboot_to_loader(void) {
+    watchdog_hw->scratch[1] = BL_BOOT_SD;
+    watchdog_hw->scratch[2] = 0;
+    watchdog_hw->scratch[0] = PICOCALC_BL_MAGIC;
+    watchdog_reboot(0, 0, 10);
+    for (;;) tight_loop_contents();
 }
 
 int disp_len(const char *s) {
