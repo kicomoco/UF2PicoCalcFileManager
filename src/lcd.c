@@ -66,33 +66,41 @@ static void build_font(void) {
     font[G_DOTS][7] = 0x49;
 }
 
-static void lcd_cmd(uint8_t c) {
-    gpio_put(PIN_DC, 0);
-    gpio_put(PIN_CS, 0);
-    spi_write_blocking(LCD_SPI, &c, 1);
-    gpio_put(PIN_CS, 1);
-}
-
-static void lcd_data(const uint8_t *d, size_t n) {
-    gpio_put(PIN_DC, 1);
-    gpio_put(PIN_CS, 0);
-    spi_write_blocking(LCD_SPI, d, n);
-    gpio_put(PIN_CS, 1);
-}
-
+/* Sends a command byte and its parameters within one chip-select assertion. */
 static void lcd_cmdd(uint8_t c, const uint8_t *d, size_t n) {
-    lcd_cmd(c);
-    if (n) lcd_data(d, n);
+    gpio_put(PIN_CS, 0);
+    gpio_put(PIN_DC, 0);
+    spi_write_blocking(LCD_SPI, &c, 1);
+    gpio_put(PIN_DC, 1);
+    if (n) spi_write_blocking(LCD_SPI, d, n);
+    gpio_put(PIN_CS, 1);
+}
+
+static void lcd_cmd(uint8_t c) {
+    lcd_cmdd(c, NULL, 0);
 }
 
 #define CMDD(c, ...) do { static const uint8_t _d[] = {__VA_ARGS__}; lcd_cmdd(c, _d, sizeof(_d)); } while (0)
 
-static void lcd_window(int x0, int y0, int x1, int y1) {
+/* Sets the address window and starts a memory write. Chip select is left asserted
+ * (with DC high) so pixel data can follow directly; the caller must raise CS when done.
+ * The panel controller drops a memory write if CS is released after RAMWR. */
+static void lcd_begin_write(int x0, int y0, int x1, int y1) {
+    const uint8_t caset = 0x2A, paset = 0x2B, ramwr = 0x2C;
     uint8_t col[4] = {x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF};
     uint8_t row[4] = {y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF};
-    lcd_cmdd(0x2A, col, 4);
-    lcd_cmdd(0x2B, row, 4);
-    lcd_cmd(0x2C);
+    gpio_put(PIN_CS, 0);
+    gpio_put(PIN_DC, 0);
+    spi_write_blocking(LCD_SPI, &caset, 1);
+    gpio_put(PIN_DC, 1);
+    spi_write_blocking(LCD_SPI, col, 4);
+    gpio_put(PIN_DC, 0);
+    spi_write_blocking(LCD_SPI, &paset, 1);
+    gpio_put(PIN_DC, 1);
+    spi_write_blocking(LCD_SPI, row, 4);
+    gpio_put(PIN_DC, 0);
+    spi_write_blocking(LCD_SPI, &ramwr, 1);
+    gpio_put(PIN_DC, 1);
 }
 
 void lcd_init(void) {
@@ -135,21 +143,21 @@ void lcd_init(void) {
     CMDD(0xF7, 0xA9, 0x51, 0x2C, 0x82);
     lcd_cmd(0x11);
     sleep_ms(120);
-    lcd_cmd(0x29);
-    sleep_ms(120);
-    CMDD(0x36, 0x48);
 
+    /* Clear GRAM before enabling the display so no stale image is shown. */
     for (int y = 0; y < SCR_ROWS; y++)
         for (int x = 0; x < SCR_COLS; x++) shown[y][x] = 0xFFFFFFFF;
     scr_clear(C_WHITE, C_BLACK);
     scr_flush();
+
+    lcd_cmd(0x29);
+    sleep_ms(120);
+    CMDD(0x36, 0x48);
 }
 
 static void draw_run(int y, int x0, int x1) {
     static uint8_t line[SCR_COLS * CELL_W * 3];
-    lcd_window(x0 * CELL_W, y * CELL_H, (x1 + 1) * CELL_W - 1, (y + 1) * CELL_H - 1);
-    gpio_put(PIN_DC, 1);
-    gpio_put(PIN_CS, 0);
+    lcd_begin_write(x0 * CELL_W, y * CELL_H, (x1 + 1) * CELL_W - 1, (y + 1) * CELL_H - 1);
     for (int r = 0; r < CELL_H; r++) {
         uint8_t *p = line;
         for (int x = x0; x <= x1; x++) {
