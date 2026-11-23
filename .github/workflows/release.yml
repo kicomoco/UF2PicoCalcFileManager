@@ -1,0 +1,93 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  PICO_SDK_VERSION: 2.2.0
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: ver
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          last=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          last=${last:-v0.0.0}
+          IFS=. read -r major minor patch <<< "${last#v}"
+          if grep -qi '#major' <<< "$COMMIT_MSG"; then
+            major=$((major + 1)); minor=0; patch=0
+          elif grep -qi '#minor' <<< "$COMMIT_MSG"; then
+            minor=$((minor + 1)); patch=0
+          else
+            patch=$((patch + 1))
+          fi
+          version="$major.$minor.$patch"
+          echo "Previous: $last  Next: v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+            cmake ninja-build build-essential libusb-1.0-0-dev pkg-config python3
+
+      - name: Cache Pico SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/pico-sdk
+          key: pico-sdk-${{ env.PICO_SDK_VERSION }}-v1
+
+      - name: Fetch Pico SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$PICO_SDK_VERSION" https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
+          cd ~/pico-sdk
+          git submodule update --init --depth 1 lib/cyw43-driver lib/lwip lib/mbedtls lib/tinyusb
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DPICO_SDK_PATH=$HOME/pico-sdk \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFM_VERSION=${{ steps.ver.outputs.version }} \
+            -DFM_GITHUB_REPO=${{ github.repository }}
+          cmake --build build --parallel
+          ls -l build/picocalc_file_manager.uf2
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+          {
+            echo "PicoCalc File Manager $TAG"
+            echo
+            echo "Copy \`picocalc_file_manager.uf2\` to \`/pico2-apps/\` on the SD card and launch it from UF2Loader."
+            echo
+            echo "Changes:"
+            git log -1 --pretty=format:'- %s' "$GITHUB_SHA"
+          } > notes.md
+          gh release create "$TAG" build/picocalc_file_manager.uf2 \
+            --title "$TAG" --notes-file notes.md --latest
