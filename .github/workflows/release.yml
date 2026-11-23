@@ -8,9 +8,10 @@ on:
 permissions:
   contents: write
 
+# Each push to main contains everything before it, so a newer run replaces an older one.
 concurrency:
   group: release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PICO_SDK_VERSION: 2.2.0
@@ -18,6 +19,7 @@ env:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,9 +46,11 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Install toolchain
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT_OPTS update
+          sudo apt-get $APT_OPTS install -y --no-install-recommends \
             gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
             cmake ninja-build build-essential libusb-1.0-0-dev pkg-config python3
 
